@@ -1,17 +1,21 @@
-using DifferentialEquations, DynamicalSystems, ChaosTools, LinearAlgebra
+module HopfieldModel
+
+using DifferentialEquations, DynamicalSystems, ChaosTools, LinearAlgebra, Optim
+
+export f, h, u, get_V, get_W, Jac, C0_of_Y, C_of_Y, B_of_Y, α_of_Y, β_of_Y, S_of_Y, γ_of_Y, δ_of_Y, get_lorenz
 
 f(x, λ) = map(val ->
     if val < 0
-        -abs(val^λ)
+        -(-val)^λ
     else
         val^λ
     end,
     x
 )
 
-h(x, γ) = map(val ->
+h(x, δ, γ) = map(val ->
     if val < 0
-        -(-val)^γ
+        -(-val)^δ
     else
         val^γ
     end,
@@ -53,7 +57,7 @@ S_of_Y(Y) = [
 δ_of_Y(Y) = Y[29]
 
 function get_V(g, B, Q)
-    m, _ = size(H)
+    m, _ = size(Q)
     Va = map(val ->
         if val < 0 0
         else log(val) end,
@@ -107,17 +111,27 @@ function construct_3d_hopfield_model(attractor::Dataset, Δt::Float64 = 1.0)
     P = Array([ones(m) f(g, λ)])
     D = Array(reduce(hcat, attractor[2:end] - attractor[1:end-1])' / Δt)
 
-    Y = [ones(21); 1; 1; 0; 1; 1; 1; 2; 2]
+    α = rand() + 1
+    β = rand() + 1
+    γ = α + 1
+    δ = β + 1
+    Y = [rand(21); α; β; 0; 1; 1; 1; γ; δ]
 
+    error = Inf
+    # while true
     function model_error(Y)
-        # α = α_of_Y(Y)
-        # γ = γ_of_Y(Y)
-        # β = β_of_Y(Y)
-        # δ = δ_of_Y(Y)
+        α = α_of_Y(Y)
+        γ = γ_of_Y(Y)
+        β = β_of_Y(Y)
+        δ = δ_of_Y(Y)
 
-        # Q = u(g, α, β)
+        if α > γ || α > δ || β > γ || β > δ
+            return Inf
+        end
+
+        Q = u(g, α, β)
         # V = get_V(g, B_of_Y(Y), Q)
-        # H = h(g, γ)
+        H = h(g, δ, γ)
         # W = get_W(g, S_of_Y(Y), H)
 
         # Wₖ = Jac(P, Q, V, H, W, g)
@@ -125,38 +139,69 @@ function construct_3d_hopfield_model(attractor::Dataset, Δt::Float64 = 1.0)
 
         # Y = (Wₖ' * Wₖ + μ * I)^(-1) * Wₖ' * reduce(vcat, D)
 
-        α = α_of_Y(Y)
-        γ = γ_of_Y(Y)
-        β = β_of_Y(Y)
-        δ = δ_of_Y(Y)
         C0 = C0_of_Y(Y)
         C = C_of_Y(Y)
+        F = f(g, λ)
         B = B_of_Y(Y)
         S = S_of_Y(Y)
-        H = h(g, γ)
 
         R = reduce(hcat,
-            [C0 + C*g[i,:] + B*g[i,:] + S*H[i,:] for i = 1:m]
+            [C0 + C*F[i,:] + B*Q[i,:] + S*H[i,:] for i = 1:m]
         )
-        MSE = sum(reduce(vcat, R) - reduce(vcat, D))^2
-        return MSE, Y
+        ER = reduce(vcat, D) - reduce(vcat, R)
+        MSE = sum(ER)^2
+        if MSE < error
+            println("Y = $Y")
+            println("E = $MSE")
+            println()
+            error = MSE
+        end
+        # println("Y = $Y")
+        # readline()
+        return MSE
     end
 
-    println("k = $best_k; mse = $best_error")
-    println("C₀ = $best_C₀")
-    println("C = $best_C")
-    println("S = $best_S")
-    println("γ = $γ")
-    return best_C₀, best_C, best_S, γ
+    α_lower = 0
+    β_lower = 0
+    γ_lower = 0
+    δ_lower = 0
+    lower = [ones(21) * -Inf; α_lower; β_lower; prevfloat(0.0); -Inf; -Inf; -Inf; γ_lower; δ_lower]
+    upper = ones(29) * Inf
+
+    return optimize(model_error, lower, upper, Y)
 end
 
-function test(C0::Array{Float64,1}, C::Array{Float64,2}, S::Array{Float64,2}, γ::Int64)
-    function f(dx,x,p,t)
-        H = h(x, γ)
-        dx[:] = C0 + C*x + B*x + S*H
+function test(Y::Array{Float64,1})
+    α = α_of_Y(Y)
+    γ = γ_of_Y(Y)
+    β = β_of_Y(Y)
+    δ = δ_of_Y(Y)
+    C0 = C0_of_Y(Y)
+    C = C_of_Y(Y)
+    B = B_of_Y(Y)
+    S = S_of_Y(Y)
+    function diffeq(dx,x,p,t)
+        H = h(x, δ, γ)
+        Q = u(x, α, β)
+        F = f(x, 1.0)
+        dx[:] = C0 + C*F + B*Q + S*H
     end
     x0 = [10.,10.,-10.]
-    tspan = (0.,200000.)
-    prob = ODEProblem(f, x0, tspan)
+    tspan = (0.,2000.)
+    prob = ODEProblem(diffeq, x0, tspan)
     return solve(prob)
 end
+
+function get_lorenz()
+    dt = 0.001
+    T = 20
+    lorenz = DynamicalSystems.Systems.lorenz([12.5, 2.5, 1.5]; σ = 10.0, ρ = 28.0, β = 8/3)
+    return DynamicalSystems.trajectory(lorenz, T; dt=dt)[500:end,:]
+end
+
+function test_lorenz()
+    attractor = get_lorenz()
+    RY = construct_3d_hopfield_model()
+end
+
+end # module
