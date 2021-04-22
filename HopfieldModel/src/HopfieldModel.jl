@@ -115,10 +115,9 @@ function construct_3d_hopfield_model(attractor::Dataset, Δt::Float64 = 1.0)
     β = rand() + 1
     γ = α + 1
     δ = β + 1
-    Y = [rand(21); α; β; 0; 1; 1; 1; γ; δ]
+    Y = [(rand(21).-0.5) * 100; α; β; 0; 1; 1; 1; γ; δ]
 
     error = Inf
-    # while true
     function model_error(Y)
         α = α_of_Y(Y)
         γ = γ_of_Y(Y)
@@ -126,25 +125,21 @@ function construct_3d_hopfield_model(attractor::Dataset, Δt::Float64 = 1.0)
         δ = δ_of_Y(Y)
 
         if α > γ || α > δ || β > γ || β > δ
-            return Inf
+            return error
         end
-
-        Q = u(g, α, β)
-        # V = get_V(g, B_of_Y(Y), Q)
-        H = h(g, δ, γ)
-        # W = get_W(g, S_of_Y(Y), H)
-
-        # Wₖ = Jac(P, Q, V, H, W, g)
-        # μ = if rank(Wₖ) == 29 0 else rand() end
-
-        # Y = (Wₖ' * Wₖ + μ * I)^(-1) * Wₖ' * reduce(vcat, D)
 
         C0 = C0_of_Y(Y)
         C = C_of_Y(Y)
         F = f(g, λ)
         B = B_of_Y(Y)
+        Q = u(g, α, β)
         S = S_of_Y(Y)
+        H = h(g, δ, γ)
 
+        if any(x -> isnan(x), Y)
+            println("Y = $Y")
+        end
+            
         R = reduce(hcat,
             [C0 + C*F[i,:] + B*Q[i,:] + S*H[i,:] for i = 1:m]
         )
@@ -156,8 +151,6 @@ function construct_3d_hopfield_model(attractor::Dataset, Δt::Float64 = 1.0)
             println()
             error = MSE
         end
-        # println("Y = $Y")
-        # readline()
         return MSE
     end
 
@@ -165,10 +158,70 @@ function construct_3d_hopfield_model(attractor::Dataset, Δt::Float64 = 1.0)
     β_lower = 0
     γ_lower = 0
     δ_lower = 0
-    lower = [ones(21) * -Inf; α_lower; β_lower; prevfloat(0.0); -Inf; -Inf; -Inf; γ_lower; δ_lower]
+    lower = [ones(21) * -Inf; α_lower; β_lower; -0.0001; -Inf; -Inf; -Inf; γ_lower; δ_lower]
     upper = ones(29) * Inf
 
     return optimize(model_error, lower, upper, Y)
+end
+
+function construct_3d_hopfield_model_with_jacobian(attractor::Dataset, Δt::Float64 = 1.0, ε::Float64 = 1.0)
+    # attractor dimensions
+    N, M = size(attractor)
+    if M != 3
+        error("The method is implemented only for 3d systems for now.")
+    end
+    if N < M
+        error("Attractor can't have fewer points than its dimensions")
+    end
+    m = N-1
+    λ = 1
+    g = Array(reduce(hcat, attractor[1:end-1])')
+    P = Array([ones(m) f(g, λ)])
+    D = Array(reduce(hcat, attractor[2:end] - attractor[1:end-1])' / Δt)
+
+    α = rand() + 1
+    β = rand() + 1
+    γ = α + 1
+    δ = β + 1
+    Y = [(rand(21).-0.5) * 100; α; β; 0; 1; 1; 1; γ; δ]
+
+    error = Inf
+    while true
+        α = α_of_Y(Y)
+        γ = γ_of_Y(Y)
+        β = β_of_Y(Y)
+        δ = δ_of_Y(Y)
+
+        C0 = C0_of_Y(Y)
+        C = C_of_Y(Y)
+        F = f(g, λ)
+        B = B_of_Y(Y)
+        Q = u(g, α, β)
+        S = S_of_Y(Y)
+        H = h(g, δ, γ)
+
+        R = reduce(hcat,
+            [C0 + C*F[i,:] + B*Q[i,:] + S*H[i,:] for i = 1:m]
+        )
+        ER = (reduce(vcat, D) - reduce(vcat, R)).^2
+        MSE = sum(ER)
+        if MSE + ε < error
+            println("Y = $Y")
+            println("E = $MSE")
+            println()
+            error = MSE
+
+            V = get_V(g, B_of_Y(Y), Q)
+            W = get_W(g, S_of_Y(Y), H)
+            Wₖ = Jac(P, Q, V, H, W, g)
+            μ = if rank(Wₖ) == 29 0 else rand() end
+            Y = Y + (Wₖ' * Wₖ + μ * I)^(-1) * Wₖ' * ER
+        else
+            break
+        end
+    end
+
+    return Y
 end
 
 function test(Y::Array{Float64,1})
@@ -187,7 +240,7 @@ function test(Y::Array{Float64,1})
         dx[:] = C0 + C*F + B*Q + S*H
     end
     x0 = [10.,10.,-10.]
-    tspan = (0.,2000.)
+    tspan = (0.,20.)
     prob = ODEProblem(diffeq, x0, tspan)
     return solve(prob)
 end
@@ -201,7 +254,8 @@ end
 
 function test_lorenz()
     attractor = get_lorenz()
-    RY = construct_3d_hopfield_model()
+    Y = construct_3d_hopfield_model(attractor, 0.01).minimizer
+    return reduce(hcat, HopfieldModel.test(Y).u)
 end
 
 end # module
